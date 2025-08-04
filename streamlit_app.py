@@ -1,172 +1,217 @@
-import datetime
-import random
-
-import altair as alt
-import numpy as np
-import pandas as pd
+# ───────────────────────────────────────────────────────────
+#  tactic_evaluator_app.py
+#  ----------------------------------------------------------
+#  Streamlit app to evaluate the output from your
+#  “Marketing‑Tactic Text Classifier”:
+#  • Aggregates word‑level hit‑rates at an ID level
+#  • Computes precision, recall, and F1 for each tactic
+#  ----------------------------------------------------------
+#  REQUIREMENTS: pandas, streamlit 1.28+, (no external ML libs)
+# ───────────────────────────────────────────────────────────
+import ast
+import math
 import streamlit as st
+import pandas as pd
 
-# Show app title and description.
-st.set_page_config(page_title="Support tickets", page_icon="🎫")
-st.title("🎫 Support tickets")
-st.write(
-    """
-    This app shows how you can build an internal tool in Streamlit. Here, we are 
-    implementing a support ticket workflow. The user can create a ticket, edit 
-    existing tickets, and view some statistics.
-    """
-)
+st.set_page_config(page_title="📏 Tactic Classifier Evaluator", layout="wide")
+st.title("📏 Tactic Classifier Evaluator")
 
-# Create a random Pandas dataframe with existing tickets.
-if "df" not in st.session_state:
-
-    # Set seed for reproducibility.
-    np.random.seed(42)
-
-    # Make up some fake issue descriptions.
-    issue_descriptions = [
-        "Network connectivity issues in the office",
-        "Software application crashing on startup",
-        "Printer not responding to print commands",
-        "Email server downtime",
-        "Data backup failure",
-        "Login authentication problems",
-        "Website performance degradation",
-        "Security vulnerability identified",
-        "Hardware malfunction in the server room",
-        "Employee unable to access shared files",
-        "Database connection failure",
-        "Mobile application not syncing data",
-        "VoIP phone system issues",
-        "VPN connection problems for remote employees",
-        "System updates causing compatibility issues",
-        "File server running out of storage space",
-        "Intrusion detection system alerts",
-        "Inventory management system errors",
-        "Customer data not loading in CRM",
-        "Collaboration tool not sending notifications",
+# ───────────────────────────────────────────────────────────
+#  Built‑in tactic dictionaries (same as first app)
+# ───────────────────────────────────────────────────────────
+DEFAULT_TACTICS = {
+    "urgency_marketing":  ["now", "today", "limited", "hurry", "exclusive"],
+    "social_proof":       ["bestseller", "popular", "trending", "recommended"],
+    "discount_marketing": ["sale", "discount", "deal", "free", "offer"],
+    "Classic_Timeless_Luxury_style": [
+        'elegance', 'heritage', 'sophistication', 'refined', 'timeless', 'grace',
+        'legacy', 'opulence', 'bespoke', 'tailored', 'understated', 'prestige',
+        'quality', 'craftsmanship', 'heirloom', 'classic', 'tradition', 'iconic',
+        'enduring', 'rich', 'authentic', 'luxury', 'fine', 'pure', 'exclusive',
+        'elite', 'mastery', 'immaculate', 'flawless', 'distinction', 'noble',
+        'chic', 'serene', 'clean', 'minimal', 'poised', 'balanced', 'eternal',
+        'neutral', 'subtle', 'grand', 'timelessness', 'tasteful', 'quiet', 'sublime'
     ]
+}
 
-    # Generate the dataframe with 100 rows/tickets.
-    data = {
-        "ID": [f"TICKET-{i}" for i in range(1100, 1000, -1)],
-        "Issue": np.random.choice(issue_descriptions, size=100),
-        "Status": np.random.choice(["Open", "In Progress", "Closed"], size=100),
-        "Priority": np.random.choice(["High", "Medium", "Low"], size=100),
-        "Date Submitted": [
-            datetime.date(2023, 6, 1) + datetime.timedelta(days=random.randint(0, 182))
-            for _ in range(100)
-        ],
-    }
-    df = pd.DataFrame(data)
-
-    # Save the dataframe in session state (a dictionary-like object that persists across
-    # page runs). This ensures our data is persisted when the app updates.
-    st.session_state.df = df
-
-
-# Show a section to add a new ticket.
-st.header("Add a ticket")
-
-# We're adding tickets via an `st.form` and some input widgets. If widgets are used
-# in a form, the app will only rerun once the submit button is pressed.
-with st.form("add_ticket_form"):
-    issue = st.text_area("Describe the issue")
-    priority = st.selectbox("Priority", ["High", "Medium", "Low"])
-    submitted = st.form_submit_button("Submit")
-
-if submitted:
-    # Make a dataframe for the new ticket and append it to the dataframe in session
-    # state.
-    recent_ticket_number = int(max(st.session_state.df.ID).split("-")[1])
-    today = datetime.datetime.now().strftime("%m-%d-%Y")
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{recent_ticket_number+1}",
-                "Issue": issue,
-                "Status": "Open",
-                "Priority": priority,
-                "Date Submitted": today,
-            }
-        ]
-    )
-
-    # Show a little success message.
-    st.write("Ticket submitted! Here are the ticket details:")
-    st.dataframe(df_new, use_container_width=True, hide_index=True)
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0)
-
-# Show section to view and edit existing tickets in a table.
-st.header("Existing tickets")
-st.write(f"Number of tickets: `{len(st.session_state.df)}`")
-
-st.info(
-    "You can edit the tickets by double clicking on a cell. Note how the plots below "
-    "update automatically! You can also sort the table by clicking on the column headers.",
-    icon="✍️",
+# ───────────────────────────────────────────────────────────
+#  1 ▸ UPLOAD PREDICTIONS CSV
+# ───────────────────────────────────────────────────────────
+pred_file = st.file_uploader(
+    "📁 Upload *classified_results.csv* (predictions output from first app)",
+    type="csv",
+    key="pred_csv"
 )
 
-# Show the tickets dataframe with `st.data_editor`. This lets the user edit the table
-# cells. The edited data is returned as a new dataframe.
-edited_df = st.data_editor(
-    st.session_state.df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Status": st.column_config.SelectboxColumn(
-            "Status",
-            help="Ticket status",
-            options=["Open", "In Progress", "Closed"],
-            required=True,
-        ),
-        "Priority": st.column_config.SelectboxColumn(
-            "Priority",
-            help="Priority",
-            options=["High", "Medium", "Low"],
-            required=True,
-        ),
-    },
-    # Disable editing the ID and Date Submitted columns.
-    disabled=["ID", "Date Submitted"],
-)
+if pred_file:
+    df_pred = pd.read_csv(pred_file)
+    st.success(f"Loaded {len(df_pred):,} rows from predictions file.")
+    st.dataframe(df_pred.head())
 
-# Show some metrics and charts about the ticket.
-st.header("Statistics")
+    # ───────────────────────────────────────────────────────
+    #  2 ▸ SELECT COLUMN NAMES
+    # ───────────────────────────────────────────────────────
+    st.header("🔧 Column Mapping")
 
-# Show metrics side by side using `st.columns` and `st.metric`.
-col1, col2, col3 = st.columns(3)
-num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
-col1.metric(label="Number of open tickets", value=num_open_tickets, delta=10)
-col2.metric(label="First response time (hours)", value=5.2, delta=-1.5)
-col3.metric(label="Average resolution time (hours)", value=16, delta=2)
-
-# Show two Altair charts using `st.altair_chart`.
-st.write("")
-st.write("##### Ticket status per month")
-status_plot = (
-    alt.Chart(edited_df)
-    .mark_bar()
-    .encode(
-        x="month(Date Submitted):O",
-        y="count():Q",
-        xOffset="Status:N",
-        color="Status:N",
+    id_col = st.selectbox(
+        "ID column (optional – for aggregation)",
+        options=["‑‑ none ‑‑"] + list(df_pred.columns),
+        index=0
     )
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
+    id_col = None if id_col == "‑‑ none ‑‑" else id_col
 
-st.write("##### Current ticket priorities")
-priority_plot = (
-    alt.Chart(edited_df)
-    .mark_arc()
-    .encode(theta="count():Q", color="Priority:N")
-    .properties(height=300)
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
+    text_col = st.selectbox(
+        "Column containing cleaned text",
+        options=list(df_pred.columns),
+        index=list(df_pred.columns).index("cleaned") if "cleaned" in df_pred.columns else 0
     )
-)
-st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+
+    pred_col = st.selectbox(
+        "Column containing *predicted* categories list",
+        options=list(df_pred.columns),
+        index=list(df_pred.columns).index("categories") if "categories" in df_pred.columns else 0
+    )
+
+    # Ground‑truth labels may live in same file or separate upload
+    with st.expander("Add ground‑truth labels (optional)"):
+        has_gt = st.checkbox("Ground‑truth labels are in the predictions file", value=False)
+        if has_gt:
+            gt_col = st.selectbox(
+                "Column containing *true* categories list",
+                options=list(df_pred.columns)
+            )
+            df_gt = df_pred[[gt_col]]
+        else:
+            gt_file = st.file_uploader(
+                "📁 Upload a separate CSV with ground‑truth labels (must share ID)",
+                type="csv",
+                key="gt_csv"
+            )
+            if gt_file and id_col:
+                df_gt = pd.read_csv(gt_file)
+                st.success(f"Loaded {len(df_gt):,} rows of ground‑truth labels.")
+                gt_col = st.selectbox(
+                    "Ground‑truth label column",
+                    options=list(df_gt.columns)
+                )
+                # merge on ID
+                df_pred = df_pred.merge(
+                    df_gt[[id_col, gt_col]],
+                    on=id_col,
+                    how="left",
+                    validate="m:1"
+                )
+            elif gt_file and not id_col:
+                st.error("Cannot merge ground‑truth file without an ID column.")
+                gt_col = None
+            else:
+                gt_col = None
+
+    # ───────────────────────────────────────────────────────
+    #  3 ▸ SELECT TACTIC(S) FOR EVALUATION
+    # ───────────────────────────────────────────────────────
+    st.header("🎯 Choose tactics to evaluate")
+    tactics_to_eval = st.multiselect(
+        "Select one or more tactics",
+        options=list(DEFAULT_TACTICS.keys()),
+        default=list(DEFAULT_TACTICS.keys())[:1]  # pre‑select first tactic
+    )
+
+    # ───────────────────────────────────────────────────────
+    #  4 ▸ RUN EVALUATION
+    # ───────────────────────────────────────────────────────
+    if st.button("🚀 Run Evaluation"):
+        if not tactics_to_eval:
+            st.error("Please select at least one tactic.")
+            st.stop()
+
+        # Helper to convert a cell to list safely
+        def parse_list_cell(cell):
+            if isinstance(cell, list):
+                return cell
+            try:
+                return ast.literal_eval(cell)
+            except Exception:
+                return []
+
+        df_pred["__pred_list__"] = df_pred[pred_col].apply(parse_list_cell)
+        if gt_col:
+            df_pred["__gt_list__"] = df_pred[gt_col].apply(parse_list_cell)
+
+        # ▸ 4A Word‑level metrics aggregated at ID
+        st.subheader("🧮 Word‑Level Metrics (aggregated by ID)")
+        if id_col:
+            rows = []
+            for tactic in tactics_to_eval:
+                key_terms = set(DEFAULT_TACTICS[tactic])
+                # word counts per row
+                df_pred["__total_words__"] = df_pred[text_col].str.split().apply(len)
+                df_pred["__tactic_words__"] = df_pred[text_col].apply(
+                    lambda txt: sum(1 for w in txt.split() if w in key_terms)
+                )
+                agg = df_pred.groupby(id_col)[["__total_words__", "__tactic_words__"]].sum()
+                agg[f"{tactic}_pct_words"] = (
+                    agg["__tactic_words__"] / agg["__total_words__"]
+                ).fillna(0) * 100
+                rows.append(agg[[f"{tactic}_pct_words"]])
+
+            id_metrics = pd.concat(rows, axis=1).reset_index()
+            st.dataframe(id_metrics.head())
+            st.download_button(
+                "📥 id_level_word_metrics.csv",
+                id_metrics.to_csv(index=False).encode(),
+                "id_level_word_metrics.csv",
+                "text/csv"
+            )
+        else:
+            st.info("No ID column selected → skipping ID‑level aggregation.")
+
+        # ▸ 4B Classification metrics (precision, recall, F1)
+        st.subheader("📊 Classification Metrics")
+
+        if gt_col:
+            metric_rows = []
+            for tactic in tactics_to_eval:
+                # flags per row
+                df_pred["__pred_flag__"] = df_pred["__pred_list__"].apply(
+                    lambda lst: tactic in lst
+                )
+                df_pred["__gt_flag__"] = df_pred["__gt_list__"].apply(
+                    lambda lst: tactic in lst
+                )
+
+                TP = int(((df_pred["__pred_flag__"] == True) & (df_pred["__gt_flag__"] == True)).sum())
+                FP = int(((df_pred["__pred_flag__"] == True) & (df_pred["__gt_flag__"] == False)).sum())
+                FN = int(((df_pred["__pred_flag__"] == False) & (df_pred["__gt_flag__"] == True)).sum())
+
+                precision = TP / (TP + FP) if (TP + FP) else 0.0
+                recall    = TP / (TP + FN) if (TP + FN) else 0.0
+                f1        = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+
+                metric_rows.append({
+                    "tactic": tactic,
+                    "TP": TP, "FP": FP, "FN": FN,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1": f1
+                })
+
+            metrics_df = pd.DataFrame(metric_rows).set_index("tactic")
+            st.dataframe(metrics_df.style.format({
+                "precision": "{:.3f}",
+                "recall": "{:.3f}",
+                "f1": "{:.3f}"
+            }))
+
+            st.download_button(
+                "📥 classification_metrics.csv",
+                metrics_df.to_csv().encode(),
+                "classification_metrics.csv",
+                "text/csv"
+            )
+        else:
+            st.info(
+                "Ground‑truth labels were not provided; precision/recall/F1 cannot be computed."
+            )
+else:
+    st.info("Upload the predictions CSV from the first app to begin.")
